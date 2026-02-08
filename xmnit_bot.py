@@ -1,6 +1,6 @@
 from curl_cffi import requests as curl_req
 import requests as normal_req
-import time, os, threading, json
+import time, os, threading, re
 
 # DATA DARI KOYEB
 FIREBASE_URL = "https://tasksms-225d1-default-rtdb.asia-southeast1.firebasedatabase.app"
@@ -14,109 +14,83 @@ def kirim_tele(pesan):
     try:
         url = f"https://api.telegram.org/bot{TELE_TOKEN}/sendMessage"
         normal_req.post(url, data={'chat_id': TELE_CHAT_ID, 'text': pesan}, timeout=10)
-    except Exception as e:
-        print(f"Gagal kirim Tele: {e}")
+    except: pass
 
-# --- FUNGSI REQUEST NOMOR (GET NUMBER) ---
-def tembak_get_number(range_num):
-    api_url = "https://x.mnitnetwork.com/mapi/v1/mdashboard/getnum/number"
-    headers = {
-        'content-type': 'application/json',
-        'cookie': MNIT_COOKIE,
-        'mauthtoken': MNIT_TOKEN,
-        'user-agent': MY_UA,
-        'x-requested-with': 'XMLHttpRequest'
-    }
-    try:
-        res = curl_req.post(api_url, headers=headers, json={"range": range_num}, impersonate="chrome", timeout=30)
-        if res.status_code == 200:
-            data = res.json()
-            # Ambil nomor dari data['data']['copy']
-            return data.get('data', {}).get('copy')
-        return None
-    except: return None
-
-# --- FUNGSI GRAB SMS (DARI TABEL INFO) ---
 def grab_sms_mnit():
-    print("LOG: SMS Grabber X-MNIT Aktif...")
-    # URL API buat narik data tabel (Info)
-    date_now = time.strftime("%Y-%m-%d")
-    api_info = f"https://x.mnitnetwork.com/mapi/v1/mdashboard/getnum/info?date={date_now}&page=1&search=&status="
-    
+    print("LOG: SMS Grabber X-MNIT Started...")
+    done_ids = []
     headers = {
         'cookie': MNIT_COOKIE,
         'mauthtoken': MNIT_TOKEN,
         'user-agent': MY_UA,
         'accept': 'application/json'
     }
-    
-    done_ids = []
-    
-    while True:
-        try:
-            res = curl_req.get(api_info, headers=headers, impersonate="chrome", timeout=30)
-            if res.status_code == 200:
-                data = res.json()
-                # Lo liat di logs nanti, MNIT naruh data di 'data' atau 'items'
-                items = data.get('data', {}).get('data', [])
-                
-                for item in items:
-                    num = item.get('copy') # Nomor lo
-                    code = item.get('code') # Kode OTP (Warna ijo di web)
-                    
-                    if code and num:
-                        msg = f"<#> {code} is your Facebook code"
-                        uid = f"{num}_{code}"
-                        
-                        if uid not in done_ids:
-                            # 1. Kirim ke Firebase Web lo
-                            normal_req.post(f"{FIREBASE_URL}/messages.json", json={
-                                "liveSms": num,
-                                "messageContent": msg,
-                                "timestamp": int(time.time() * 1000)
-                            })
-                            # 2. Kirim Notif Tele
-                            kirim_tele(f"📩 OTP MNIT MASUK!\nNomor: {num}\nKode: {code}")
-                            done_ids.append(uid)
-                            print(f"✅ SMS Grabbed: {num} -> {code}")
-            time.sleep(3)
-        except: time.sleep(5)
 
-# --- FUNGSI UTAMA (LISTENER PERINTAH) ---
+    while True:
+        # CEK 2 TANGGAL SEKALIGUS (Hari ini & Kemarin) biar nggak miss gara-gara beda jam server
+        tgl_skrg = time.strftime("%Y-%m-%d")
+        tgl_kmrn = time.strftime("%Y-%m-%d", time.localtime(time.time() - 86400))
+        
+        for tgl in [tgl_skrg, tgl_kmrn]:
+            api_info = f"https://x.mnitnetwork.com/mapi/v1/mdashboard/getnum/info?date={tgl}&page=1&search=&status="
+            try:
+                res = curl_req.get(api_info, headers=headers, impersonate="chrome", timeout=30)
+                if res.status_code == 200:
+                    data = res.json()
+                    # Ambil list nomor/otp dari data -> data
+                    items = data.get('data', {}).get('data', [])
+                    
+                    for item in items:
+                        num = item.get('copy')  # Nomor HP lo
+                        code = item.get('code') # OTP Facebook lo
+                        
+                        if code and num:
+                            # Bersihkan tag HTML kalau ada (biasanya code dikasih warna ijo)
+                            clean_code = re.sub('<[^<]+?>', '', str(code))
+                            uid = f"{num}_{clean_code}"
+                            
+                            if uid not in done_ids:
+                                print(f"✅ SMS GRABBED: {num} -> {clean_code}")
+                                msg_content = f"<#> {clean_code} is your Facebook code"
+                                
+                                # 1. KIRIM KE FIREBASE (Biar muncul di web lo)
+                                normal_req.post(f"{FIREBASE_URL}/messages.json", json={
+                                    "liveSms": num,
+                                    "messageContent": msg_content,
+                                    "timestamp": int(time.time() * 1000)
+                                })
+                                # 2. KIRIM NOTIF TELEGRAM
+                                kirim_tele(f"📩 OTP MNIT MASUK!\nNomor: {num}\nKode: {clean_code}")
+                                done_ids.append(uid)
+            except:
+                pass
+        time.sleep(3) # Cek tiap 3 detik
+
+def tembak_get_number(range_num):
+    api_url = "https://x.mnitnetwork.com/mapi/v1/mdashboard/getnum/number"
+    headers = {'content-type': 'application/json','cookie': MNIT_COOKIE,'mauthtoken': MNIT_TOKEN,'user-agent': MY_UA}
+    try:
+        res = curl_req.post(api_url, headers=headers, json={"range": range_num}, impersonate="chrome", timeout=30)
+        if res.status_code == 200:
+            return res.json().get('data', {}).get('copy')
+    except: return None
+
 def run_xmnit():
-    print("🚀 X-MNIT STEALTH ENGINE STARTED...")
-    kirim_tele("🚀 Bot X-MNIT Aktif 24 Jam! PC Boleh Mati.")
-    
-    # Jalankan SMS Grabber di background thread
+    print("🚀 X-MNIT Engine Active (PC Boleh Mati)...")
     threading.Thread(target=grab_sms_mnit, daemon=True).start()
-    
     while True:
         try:
-            # Pantau perintah dari Firebase
             res_fire = normal_req.get(f"{FIREBASE_URL}/perintah_bot.json").json()
             if res_fire:
                 for req_id, val in res_fire.items():
                     target = val.get('range')
-                    print(f"🚀 Memproses Get Number: {target}")
-                    
                     nomor = tembak_get_number(target)
-                    
                     if nomor:
-                        # 1. Masukin ke Firebase Biar Muncul di Web lo
                         normal_req.post(f"{FIREBASE_URL}/active_numbers.json", json={
-                            "number": nomor,
+                            "number": nomor, 
                             "timestamp": int(time.time())
                         })
-                        # 2. Notif Tele (WAJIB ADA)
-                        kirim_tele(f"✅ X-MNIT: Nomor Didapat!\nNomor: {nomor}\nRange: {target}")
-                        print(f"✅ Berhasil Get: {nomor}")
-                    else:
-                        kirim_tele(f"❌ X-MNIT: Gagal dapet nomor untuk {target}")
-
-                    # Hapus perintah biar gak dobel
+                        kirim_tele(f"✅ Nomor Didapat: {nomor}")
                     normal_req.delete(f"{FIREBASE_URL}/perintah_bot/{req_id}.json")
-            
-            time.sleep(1.5)
-        except Exception as e:
-            print(f"Loop Error: {e}")
-            time.sleep(5)
+            time.sleep(2)
+        except: time.sleep(5)
