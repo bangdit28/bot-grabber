@@ -1,7 +1,6 @@
 from curl_cffi import requests
-import time, os, json
+import time, os, re
 
-# DATA DARI KOYEB
 FIREBASE_URL = "https://tasksms-225d1-default-rtdb.asia-southeast1.firebasedatabase.app"
 MNIT_COOKIE = os.getenv("MNIT_COOKIE")
 MNIT_TOKEN = os.getenv("MNIT_TOKEN")
@@ -11,60 +10,61 @@ TELE_CHAT_ID = os.getenv("TELE_CHAT_ID")
 
 def kirim_tele(pesan):
     try:
-        url = f"https://api.telegram.org/bot{TELE_TOKEN}/sendMessage"
         import requests as req_tele
-        req_tele.post(url, data={'chat_id': TELE_CHAT_ID, 'text': pesan}, timeout=5)
+        req_tele.post(f"https://api.telegram.org/bot{TELE_TOKEN}/sendMessage", 
+                      data={'chat_id': TELE_CHAT_ID, 'text': pesan}, timeout=5)
     except: pass
 
 def tembak_get_number(range_num):
-    api_url = f"https://x.mnitnetwork.com/mdashboard/getnum?range={range_num}"
+    # --- URL API ASLI BERDASARKAN SS NETWORK TAB ---
+    api_url = f"https://x.mnitnetwork.com/mapi/v1/mdashboard/getnum?range={range_num}"
     
     headers = {
         'authority': 'x.mnitnetwork.com',
         'accept': 'application/json, text/plain, */*',
         'cookie': MNIT_COOKIE,
         'mauthtoken': MNIT_TOKEN,
-        'referer': 'https://x.mnitnetwork.com/mauth/dashboard',
+        'referer': 'https://x.mnitnetwork.com/mdashboard/getnum',
         'user-agent': MY_UA,
         'x-requested-with': 'XMLHttpRequest',
     }
     
     try:
-        # Tembak pake impersonate chrome
+        # Tembak pake curl_cffi impersonate chrome
         res = requests.get(api_url, headers=headers, impersonate="chrome", timeout=30)
         
-        # --- DEBUG AREA ---
-        print(f"--- RESPON DARI MNIT (Status: {res.status_code}) ---")
-        print(res.text) # KITA LIAT ISI ASLINYA DI LOG KOYEB
-        print("------------------------------------------")
+        print(f"DEBUG MNIT: {res.status_code}")
         
+        # Jika respon masih HTML (Cloudflare ketat)
+        if "<!DOCTYPE html>" in res.text:
+            print("⚠️ Masih dapet HTML. Coba cek apakah Cookie cf_clearance sudah dimasukkan.")
+            return "HTML_RESPONSE"
+
         if res.status_code == 200:
-            if "Just a moment" in res.text:
-                return "CF_BLOCKED"
+            raw_text = res.text.strip()
+            print(f"ISI RESPON: {raw_text[:50]}") # Liat 50 karakter pertama
             
-            # 1. Cek jika responnya JSON
+            # 1. Jika isinya angka doang
+            if raw_text.isdigit() and 5 < len(raw_text) < 20:
+                return raw_text
+            
+            # 2. Jika isinya JSON
             try:
                 data = res.json()
+                # Sesuaikan field 'number' dengan hasil Preview di Network Tab
                 return data.get('number') or data.get('data', {}).get('number')
             except:
-                # 2. Jika responnya teks mentah, kita coba cari angka nomor di dalemnya
-                # Kita ambil 5-15 digit angka dari respon
-                import re
-                numbers = re.findall(r'\d{10,15}', res.text)
-                if numbers:
-                    return numbers[0] # Ambil angka pertama yang ketemu
-                
-                # 3. Jika isinya mauthtoken panjang, berarti nomornya masuk ke list 'Active'
-                if "mauthtoken" in res.text:
-                    return "CHECK_ACTIVE_LIST"
+                # 3. Cari angka nomor di dalem teks pake Regex
+                match = re.search(r'\d{10,15}', raw_text)
+                return match.group(0) if match else None
         return None
     except Exception as e:
-        print(f"⚠️ Error: {e}")
+        print(f"Error API: {e}")
         return None
 
 def run_xmnit():
-    print("🚀 X-MNIT Stealth Mode Started...")
-    kirim_tele("🚀 Bot X-MNIT Stealth Aktif! Cloudflare Tembus!")
+    print("🚀 X-MNIT API Mode Started (mapi/v1)...")
+    kirim_tele("🚀 Bot X-MNIT API Aktif! Jalur mapi/v1 digunakan.")
     
     while True:
         try:
@@ -76,25 +76,26 @@ def run_xmnit():
                 for req_id, val in req.items():
                     target = val.get('range')
                     if target:
-                        print(f"🚀 Proses Range: {target}")
+                        print(f"🚀 Memproses: {target}")
                         nomor = tembak_get_number(target)
                         
-                        if nomor == "CF_BLOCKED":
-                            kirim_tele("⚠️ Cloudflare mendeteksi Bot! Ambil Cookie baru.")
-                        elif nomor == "CHECK_ACTIVE_LIST":
-                            kirim_tele("✅ Perintah Berhasil, Nomor Sedang Dialokasikan. Cek Dashboard!")
+                        if nomor == "HTML_RESPONSE":
+                            kirim_tele("⚠️ X-MNIT: Gagal! Masih dapet HTML. Update Cookie cf_clearance dari F12.")
                         elif nomor:
-                            # BERHASIL DAPET NOMOR LANGSUNG
+                            # Masukkan ke list nomor aktif agar muncul di dashboard lo
                             req_fire.post(f"{FIREBASE_URL}/active_numbers.json", json={
                                 "number": nomor,
                                 "range": target,
-                                "timestamp": int(time.time())
+                                "timestamp": int(time.time()),
+                                "status": "active"
                             })
                             kirim_tele(f"✅ X-MNIT: Nomor Didapat!\n{nomor}")
                         else:
-                            print("❌ Gagal urai nomor dari respon.")
+                            print("❌ Gagal mendapatkan nomor.")
                     
+                    # Hapus perintah agar tidak diproses berulang
                     req_fire.delete(f"{FIREBASE_URL}/perintah_bot/{req_id}.json")
-            time.sleep(2)
+            time.sleep(1.5)
         except Exception as e:
+            print(f"Loop Error: {e}")
             time.sleep(5)
