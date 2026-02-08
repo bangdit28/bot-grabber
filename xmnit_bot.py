@@ -1,98 +1,101 @@
-import cloudscraper
+from curl_cffi import requests
 import time, os
 
 # DATA DARI KOYEB
 FIREBASE_URL = "https://tasksms-225d1-default-rtdb.asia-southeast1.firebasedatabase.app"
 MNIT_COOKIE = os.getenv("MNIT_COOKIE")
 MNIT_TOKEN = os.getenv("MNIT_TOKEN")
-MY_UA = os.getenv("MY_UA") # User-Agent asli dari browser lo
+MY_UA = os.getenv("MY_UA")
 TELE_TOKEN = os.getenv("TELE_TOKEN")
 TELE_CHAT_ID = os.getenv("TELE_CHAT_ID")
-
-# Gunakan cloudscraper dengan settingan paling aman
-scraper = cloudscraper.create_scraper(
-    browser={
-        'browser': 'chrome',
-        'platform': 'windows',
-        'desktop': True
-    }
-)
 
 def kirim_tele(pesan):
     try:
         url = f"https://api.telegram.org/bot{TELE_TOKEN}/sendMessage"
-        scraper.post(url, data={'chat_id': TELE_CHAT_ID, 'text': pesan}, timeout=5)
+        # Gunakan requests biasa buat tele gak apa-apa
+        import requests as req_tele
+        req_tele.post(url, data={'chat_id': TELE_CHAT_ID, 'text': pesan}, timeout=5)
     except: pass
 
 def tembak_get_number(range_num):
     api_url = f"https://x.mnitnetwork.com/mdashboard/getnum?range={range_num}"
     
-    # HEADERS HARUS LENGKAP DAN SAMA DENGAN CHROME
     headers = {
-        'Cookie': MNIT_COOKIE,
+        'authority': 'x.mnitnetwork.com',
+        'accept': 'application/json, text/plain, */*',
+        'accept-language': 'id-ID,id;q=0.9,en-US;q=0.8,en;q=0.7',
+        'cookie': MNIT_COOKIE,
         'mauthtoken': MNIT_TOKEN,
-        'User-Agent': MY_UA, # WAJIB SAMA DENGAN CHROME PAS AMBIL COOKIE
-        'Accept': 'application/json, text/plain, */*',
-        'Accept-Language': 'id-ID,id;q=0.9,en-US;q=0.8,en;q=0.7',
-        'Referer': 'https://x.mnitnetwork.com/mauth/dashboard',
-        'Sec-Fetch-Dest': 'empty',
-        'Sec-Fetch-Mode': 'cors',
-        'Sec-Fetch-Site': 'same-origin',
-        'X-Requested-With': 'XMLHttpRequest'
+        'referer': 'https://x.mnitnetwork.com/mauth/dashboard',
+        'sec-ch-ua': '"Not(A:Brand";v="99", "Google Chrome";v="133", "Chromium";v="133"',
+        'sec-ch-ua-mobile': '?0',
+        'sec-ch-ua-platform': '"Windows"',
+        'sec-fetch-dest': 'empty',
+        'sec-fetch-mode': 'cors',
+        'sec-fetch-site': 'same-origin',
+        'user-agent': MY_UA,
+        'x-requested-with': 'XMLHttpRequest',
     }
     
     try:
-        res = scraper.get(api_url, headers=headers, timeout=20)
+        # KUNCI UTAMA: impersonate='chrome' bikin TLS Fingerprint bot lo SAMA PERSIS sama Chrome asli
+        res = requests.get(api_url, headers=headers, impersonate="chrome", timeout=30)
         
-        # JIKA MASIH KENA CLOUDFLARE (HTML)
-        if "<!DOCTYPE html>" in res.text or "Just a moment" in res.text:
-            print("❌ CLOUDFLARE MASIH MENGHALANGI")
-            return "CF_BLOCKED"
+        print(f"DEBUG MNIT: {res.status_code}")
 
         if res.status_code == 200:
-            print(f"✅ RESPON MNIT: {res.text[:30]}")
-            # Jika respon langsung nomor (teks pendek)
+            if "Just a moment" in res.text:
+                return "CF_BLOCKED"
+            
+            # Jika respon pendek (nomor)
             if 5 < len(res.text) < 25:
                 return res.text.strip()
-            # Jika respon JSON
+            
             try:
                 data = res.json()
                 return data.get('number') or data.get('data', {}).get('number')
             except:
                 return None
-        return None
+        return "ERROR_" + str(res.status_code)
     except Exception as e:
         print(f"⚠️ Error: {e}")
         return None
 
 def run_xmnit():
-    print("🚀 X-MNIT Listener Standby...")
-    kirim_tele("🚀 X-MNIT Listener Standby!")
+    print("🚀 X-MNIT Stealth Mode Started...")
+    kirim_tele("🚀 Bot X-MNIT Stealth Aktif! PC Boleh Mati.")
     
     while True:
         try:
             # Ambil perintah dari Firebase
-            req = scraper.get(f"{FIREBASE_URL}/perintah_bot.json").json()
+            import requests as req_fire
+            res_fire = req_fire.get(f"{FIREBASE_URL}/perintah_bot.json")
+            req = res_fire.json()
+            
             if req:
                 for req_id, val in req.items():
                     target = val.get('range')
                     if target:
+                        print(f"🚀 Proses Range: {target}")
                         nomor = tembak_get_number(target)
                         
                         if nomor == "CF_BLOCKED":
-                            kirim_tele("⚠️ X-MNIT Gagal! Cloudflare minta 'tiket' baru. Ambil COOKIE + USER-AGENT dari Chrome sekarang.")
-                        elif nomor:
-                            # BERHASIL DAPET NOMOR
-                            scraper.post(f"{FIREBASE_URL}/active_numbers.json", json={
+                            kirim_tele("⚠️ Cloudflare mendeteksi Bot! Coba ambil Cookie baru & pastikan saldo ada.")
+                        elif nomor and "ERROR_" not in str(nomor):
+                            # BERHASIL
+                            req_fire.post(f"{FIREBASE_URL}/active_numbers.json", json={
                                 "number": nomor,
                                 "range": target,
                                 "timestamp": int(time.time())
                             })
-                            kirim_tele(f"✅ X-MNIT: Nomor Didapat!\nNomor: {nomor}")
+                            kirim_tele(f"✅ X-MNIT: Nomor Didapat!\n{nomor}")
                         else:
-                            kirim_tele("❌ X-MNIT Gagal! Respon kosong (mungkin saldo abis).")
+                            print(f"❌ Gagal dapet nomor. Respon: {nomor}")
                     
-                    # Hapus perintah biar gak dobel
-                    scraper.delete(f"{FIREBASE_URL}/perintah_bot/{req_id}.json")
-            time.sleep(1.5)
-        except: time.sleep(5)
+                    # Hapus perintah biar gak looping
+                    req_fire.delete(f"{FIREBASE_URL}/perintah_bot/{req_id}.json")
+            
+            time.sleep(2)
+        except Exception as e:
+            print(f"Loop Error: {e}")
+            time.sleep(5)
