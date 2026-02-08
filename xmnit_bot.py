@@ -1,15 +1,21 @@
 import cloudscraper
 import time, os
 
-# AMBIL DATA DARI KOYEB
+# DATA DARI KOYEB
 FIREBASE_URL = "https://tasksms-225d1-default-rtdb.asia-southeast1.firebasedatabase.app"
 MNIT_COOKIE = os.getenv("MNIT_COOKIE")
 MNIT_TOKEN = os.getenv("MNIT_TOKEN")
+MY_UA = os.getenv("MY_UA") # User-Agent asli dari browser lo
 TELE_TOKEN = os.getenv("TELE_TOKEN")
 TELE_CHAT_ID = os.getenv("TELE_CHAT_ID")
 
+# Gunakan cloudscraper dengan settingan paling aman
 scraper = cloudscraper.create_scraper(
-    browser={'browser': 'chrome', 'platform': 'windows', 'mobile': False}
+    browser={
+        'browser': 'chrome',
+        'platform': 'windows',
+        'desktop': True
+    }
 )
 
 def kirim_tele(pesan):
@@ -20,24 +26,32 @@ def kirim_tele(pesan):
 
 def tembak_get_number(range_num):
     api_url = f"https://x.mnitnetwork.com/mdashboard/getnum?range={range_num}"
+    
+    # HEADERS HARUS LENGKAP DAN SAMA DENGAN CHROME
     headers = {
         'Cookie': MNIT_COOKIE,
         'mauthtoken': MNIT_TOKEN,
+        'User-Agent': MY_UA, # WAJIB SAMA DENGAN CHROME PAS AMBIL COOKIE
         'Accept': 'application/json, text/plain, */*',
+        'Accept-Language': 'id-ID,id;q=0.9,en-US;q=0.8,en;q=0.7',
         'Referer': 'https://x.mnitnetwork.com/mauth/dashboard',
+        'Sec-Fetch-Dest': 'empty',
+        'Sec-Fetch-Mode': 'cors',
+        'Sec-Fetch-Site': 'same-origin',
         'X-Requested-With': 'XMLHttpRequest'
     }
     
     try:
         res = scraper.get(api_url, headers=headers, timeout=20)
-        print(f"DEBUG MNIT: {res.status_code} - Respon: {res.text[:50]}")
         
-        # CEK JIKA TERDETEKSI CLOUDFLARE (ISI HTML)
-        if "<!DOCTYPE html>" in res.text or "<html" in res.text:
-            return "CLOUDFLARE_BLOCKED"
+        # JIKA MASIH KENA CLOUDFLARE (HTML)
+        if "<!DOCTYPE html>" in res.text or "Just a moment" in res.text:
+            print("❌ CLOUDFLARE MASIH MENGHALANGI")
+            return "CF_BLOCKED"
 
         if res.status_code == 200:
-            # Jika respon pendek (asumsi itu nomor)
+            print(f"✅ RESPON MNIT: {res.text[:30]}")
+            # Jika respon langsung nomor (teks pendek)
             if 5 < len(res.text) < 25:
                 return res.text.strip()
             # Jika respon JSON
@@ -46,47 +60,39 @@ def tembak_get_number(range_num):
                 return data.get('number') or data.get('data', {}).get('number')
             except:
                 return None
-        elif res.status_code == 403:
-            return "COOKIE_EXPIRED"
-            
         return None
     except Exception as e:
-        print(f"⚠️ Error Bypass: {e}")
+        print(f"⚠️ Error: {e}")
         return None
 
 def run_xmnit():
-    # NOTIFIKASI SAAT BOT BARU NYALA (SESUAI REQUEST LO)
-    print("LOG: X-MNIT Anti-Cloudflare Started...")
-    kirim_tele("🚀 X-MNIT Listener Aktif & Standby!")
+    print("🚀 X-MNIT Listener Standby...")
+    kirim_tele("🚀 X-MNIT Listener Standby!")
     
     while True:
         try:
+            # Ambil perintah dari Firebase
             req = scraper.get(f"{FIREBASE_URL}/perintah_bot.json").json()
             if req:
                 for req_id, val in req.items():
                     target = val.get('range')
                     if target:
-                        print(f"🚀 Memproses Get Number: {target}")
                         nomor = tembak_get_number(target)
                         
-                        if nomor == "CLOUDFLARE_BLOCKED":
-                            kirim_tele(f"⚠️ X-MNIT: Gagal! Terdeteksi Cloudflare (Just a moment). Lo harus ambil COOKIE baru dari F12 Chrome.")
-                        elif nomor == "COOKIE_EXPIRED":
-                            kirim_tele(f"⚠️ X-MNIT: Cookie Expired/403. Ganti Cookie di Koyeb.")
+                        if nomor == "CF_BLOCKED":
+                            kirim_tele("⚠️ X-MNIT Gagal! Cloudflare minta 'tiket' baru. Ambil COOKIE + USER-AGENT dari Chrome sekarang.")
                         elif nomor:
                             # BERHASIL DAPET NOMOR
-                            requests.post(f"{FIREBASE_URL}/active_numbers.json", json={
+                            scraper.post(f"{FIREBASE_URL}/active_numbers.json", json={
                                 "number": nomor,
                                 "range": target,
                                 "timestamp": int(time.time())
                             })
                             kirim_tele(f"✅ X-MNIT: Nomor Didapat!\nNomor: {nomor}")
                         else:
-                            kirim_tele(f"❌ X-MNIT: Gagal dapet nomor. Respon kosong/saldo abis.")
+                            kirim_tele("❌ X-MNIT Gagal! Respon kosong (mungkin saldo abis).")
                     
-                    # Hapus perintah dari firebase
+                    # Hapus perintah biar gak dobel
                     scraper.delete(f"{FIREBASE_URL}/perintah_bot/{req_id}.json")
             time.sleep(1.5)
-        except Exception as e:
-            print(f"Error Loop MNIT: {e}")
-            time.sleep(5)
+        except: time.sleep(5)
