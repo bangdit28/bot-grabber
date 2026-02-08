@@ -2,7 +2,7 @@ import requests, time, os
 
 # AMBIL DATA DARI KOYEB ENVIRONMENT
 FIREBASE_URL = "https://tasksms-225d1-default-rtdb.asia-southeast1.firebasedatabase.app"
-MNIT_COOKIE = os.getenv("MNIT_COOKIE") # Kita balik pake Cookie manual
+MNIT_COOKIE = os.getenv("MNIT_COOKIE")
 TELE_TOKEN = os.getenv("TELE_TOKEN")
 TELE_CHAT_ID = os.getenv("TELE_CHAT_ID")
 
@@ -15,30 +15,35 @@ def kirim_tele(pesan):
     except: pass
 
 def tembak_get_number(range_num):
-    # Pastikan URL ini sesuai dengan hasil F12 lo
-    api_url = "https://x.mnitnetwork.com/api/v1/mdashboard/get" 
+    # URL SESUAI TEMUAN LO (Metode GET)
+    api_url = f"https://x.mnitnetwork.com/mdashboard/getnum?range={range_num}"
     
     headers = {
         'Cookie': MNIT_COOKIE,
-        'Content-Type': 'application/json',
         'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-        'Referer': 'https://x.mnitnetwork.com/dashboard',
-        'Origin': 'https://x.mnitnetwork.com',
-        'Accept': 'application/json'
+        'Accept': 'application/json, text/plain, */*',
+        'Referer': 'https://x.mnitnetwork.com/mauth/dashboard'
     }
     
-    payload = {"range": range_num}
-    
     try:
-        res = s.post(api_url, json=payload, headers=headers, timeout=15)
-        print(f"DEBUG MNIT: {res.status_code} - {res.text}")
+        # Pake GET sesuai URL yang lo kasih
+        res = s.get(api_url, headers=headers, timeout=15)
+        print(f"DEBUG MNIT: {res.status_code} - {res.text[:50]}...")
         
         if res.status_code == 200:
-            data = res.json()
-            num = data.get('number') or data.get('data', {}).get('number')
-            return num
+            # Karena di layar lo muncul teks panjang, kita coba ambil nomornya
+            # Jika responnya JSON
+            try:
+                data = res.json()
+                return data.get('number') or data.get('data', {}).get('number')
+            except:
+                # Jika responnya teks mentah, kita ambil teksnya (asumsi itu nomor)
+                # Tapi kalau teksnya mauthtoken, berarti ada yang salah sama respon servernya
+                if len(res.text) < 20: # Biasanya nomor telpon nggak panjang banget
+                    return res.text.strip()
+                return None
         elif res.status_code == 403:
-            kirim_tele("⚠️ COOKIE X-MNIT DIBLOKIR/EXPIRED! Silakan ganti Cookie di Koyeb.")
+            kirim_tele("⚠️ COOKIE X-MNIT DIBLOKIR/EXPIRED!")
             return None
         return None
     except Exception as e:
@@ -46,13 +51,10 @@ def tembak_get_number(range_num):
         return None
 
 def run_xmnit():
-    print("LOG: X-MNIT Listener Started (Manual Cookie Mode)...")
-    
+    print("LOG: X-MNIT Worker Started (GET Method)...")
     while True:
         try:
-            # Pantau perintah dari Firebase
             req = requests.get(f"{FIREBASE_URL}/perintah_bot.json").json()
-            
             if req:
                 for req_id, val in req.items():
                     target = val.get('range')
@@ -62,20 +64,14 @@ def run_xmnit():
                     nomor_baru = tembak_get_number(target)
                     
                     if nomor_baru:
-                        # Masukkan ke list Active Numbers lo di Firebase
                         requests.post(f"{FIREBASE_URL}/active_numbers.json", json={
                             "number": nomor_baru,
                             "range": target,
                             "timestamp": int(time.time())
                         })
-                        kirim_tele(f"✅ X-MNIT: Nomor Didapat!\nNomor: {nomor_baru}")
-                    else:
-                        print(f"❌ Gagal ambil nomor untuk {target}")
+                        kirim_tele(f"✅ X-MNIT: Nomor Didapat!\n{nomor_baru}")
                     
-                    # Hapus perintah biar gak dobel
                     requests.delete(f"{FIREBASE_URL}/perintah_bot/{req_id}.json")
-            
             time.sleep(1.5)
         except Exception as e:
-            print(f"Error Loop: {e}")
             time.sleep(5)
