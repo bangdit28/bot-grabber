@@ -17,58 +17,30 @@ def kirim_tele(pesan):
     except: pass
 
 def tembak_get_number(range_num):
-    # --- URL API (TANPA ?range= karena kita pake POST) ---
     api_url = "https://x.mnitnetwork.com/mapi/v1/mdashboard/getnum/number"
-    
     headers = {
         'authority': 'x.mnitnetwork.com',
-        'accept': 'application/json, text/plain, */*',
-        'content-type': 'application/json', # WAJIB ADA BUAT POST
+        'content-type': 'application/json',
         'cookie': MNIT_COOKIE,
         'mauthtoken': MNIT_TOKEN,
         'referer': 'https://x.mnitnetwork.com/mdashboard/getnum',
         'user-agent': MY_UA,
-        'origin': 'https://x.mnitnetwork.com',
         'x-requested-with': 'XMLHttpRequest',
     }
-    
-    # DATA DIKIRIM LEWAT BODY JSON
-    payload = {
-        "range": range_num
-    }
+    payload = {"range": range_num}
     
     try:
-        # GANTI JADI requests.post
         res = requests.post(api_url, headers=headers, json=payload, impersonate="chrome", timeout=30)
-        
-        print(f"DEBUG MNIT: Status {res.status_code}")
-        
         if res.status_code == 200:
-            raw_text = res.text.strip()
-            print(f"ISI RESPON: {raw_text[:100]}")
-            
-            if "<!DOCTYPE html>" in raw_text:
-                return "CF_BLOCKED"
-            
-            # Jika respon angka langsung
-            if raw_text.isdigit() and 5 < len(raw_text) < 20:
-                return raw_text
-                
-            try:
-                data = res.json()
-                # Sesuaikan field 'number' berdasarkan hasil Preview Network lo
-                return data.get('number') or data.get('data', {}).get('number')
-            except:
-                match = re.search(r'\d{10,15}', raw_text)
-                return match.group(0) if match else None
-                
-        return "ERROR_" + str(res.status_code)
-    except Exception as e:
-        print(f"⚠️ Error API: {e}")
+            data = res.json()
+            # AMBIL DARI data['data']['copy'] SESUAI LOG KOYEB LO
+            return data.get('data', {}).get('copy')
+        return None
+    except:
         return None
 
 def run_xmnit():
-    print("🚀 X-MNIT API Engine Started (POST Mode)...")
+    print("🚀 X-MNIT API Engine Running...")
     
     while True:
         try:
@@ -80,13 +52,15 @@ def run_xmnit():
                 for req_id, val in req.items():
                     target = val.get('range')
                     if target:
-                        print(f"🚀 Memproses Range: {target}")
                         nomor = tembak_get_number(target)
                         
-                        if nomor == "CF_BLOCKED":
-                            kirim_tele("⚠️ Cloudflare Blokir! Ambil COOKIE baru (cf_clearance) dari F12.")
-                        elif nomor and "ERROR_" not in str(nomor):
-                            req_fire.post(f"{FIREBASE_URL}/active_numbers.json", json={
+                        if nomor:
+                            # --- BAGIAN PENTING: JALUR FIREBASE ---
+                            # Jika di web belum muncul, coba ganti 'active_numbers' 
+                            # jadi 'allocations' atau 'numbers'
+                            path_tujuan = "active_numbers" 
+                            
+                            req_fire.post(f"{FIREBASE_URL}/{path_tujuan}.json", json={
                                 "number": nomor,
                                 "range": target,
                                 "timestamp": int(time.time()),
@@ -94,9 +68,9 @@ def run_xmnit():
                             })
                             kirim_tele(f"✅ X-MNIT: Nomor Didapat!\n{nomor}")
                         else:
-                            print(f"❌ Gagal. Kode Respon: {nomor}")
+                            kirim_tele("❌ X-MNIT: Gagal dapet nomor. Cek saldo/cookie.")
                     
                     req_fire.delete(f"{FIREBASE_URL}/perintah_bot/{req_id}.json")
             time.sleep(1.5)
-        except Exception as e:
+        except:
             time.sleep(5)
