@@ -1,5 +1,5 @@
 from curl_cffi import requests
-import time, os
+import time, os, json
 
 # DATA DARI KOYEB
 FIREBASE_URL = "https://tasksms-225d1-default-rtdb.asia-southeast1.firebasedatabase.app"
@@ -12,7 +12,6 @@ TELE_CHAT_ID = os.getenv("TELE_CHAT_ID")
 def kirim_tele(pesan):
     try:
         url = f"https://api.telegram.org/bot{TELE_TOKEN}/sendMessage"
-        # Gunakan requests biasa buat tele gak apa-apa
         import requests as req_tele
         req_tele.post(url, data={'chat_id': TELE_CHAT_ID, 'text': pesan}, timeout=5)
     except: pass
@@ -23,51 +22,52 @@ def tembak_get_number(range_num):
     headers = {
         'authority': 'x.mnitnetwork.com',
         'accept': 'application/json, text/plain, */*',
-        'accept-language': 'id-ID,id;q=0.9,en-US;q=0.8,en;q=0.7',
         'cookie': MNIT_COOKIE,
         'mauthtoken': MNIT_TOKEN,
         'referer': 'https://x.mnitnetwork.com/mauth/dashboard',
-        'sec-ch-ua': '"Not(A:Brand";v="99", "Google Chrome";v="133", "Chromium";v="133"',
-        'sec-ch-ua-mobile': '?0',
-        'sec-ch-ua-platform': '"Windows"',
-        'sec-fetch-dest': 'empty',
-        'sec-fetch-mode': 'cors',
-        'sec-fetch-site': 'same-origin',
         'user-agent': MY_UA,
         'x-requested-with': 'XMLHttpRequest',
     }
     
     try:
-        # KUNCI UTAMA: impersonate='chrome' bikin TLS Fingerprint bot lo SAMA PERSIS sama Chrome asli
+        # Tembak pake impersonate chrome
         res = requests.get(api_url, headers=headers, impersonate="chrome", timeout=30)
         
-        print(f"DEBUG MNIT: {res.status_code}")
-
+        # --- DEBUG AREA ---
+        print(f"--- RESPON DARI MNIT (Status: {res.status_code}) ---")
+        print(res.text) # KITA LIAT ISI ASLINYA DI LOG KOYEB
+        print("------------------------------------------")
+        
         if res.status_code == 200:
             if "Just a moment" in res.text:
                 return "CF_BLOCKED"
             
-            # Jika respon pendek (nomor)
-            if 5 < len(res.text) < 25:
-                return res.text.strip()
-            
+            # 1. Cek jika responnya JSON
             try:
                 data = res.json()
                 return data.get('number') or data.get('data', {}).get('number')
             except:
-                return None
-        return "ERROR_" + str(res.status_code)
+                # 2. Jika responnya teks mentah, kita coba cari angka nomor di dalemnya
+                # Kita ambil 5-15 digit angka dari respon
+                import re
+                numbers = re.findall(r'\d{10,15}', res.text)
+                if numbers:
+                    return numbers[0] # Ambil angka pertama yang ketemu
+                
+                # 3. Jika isinya mauthtoken panjang, berarti nomornya masuk ke list 'Active'
+                if "mauthtoken" in res.text:
+                    return "CHECK_ACTIVE_LIST"
+        return None
     except Exception as e:
         print(f"⚠️ Error: {e}")
         return None
 
 def run_xmnit():
     print("🚀 X-MNIT Stealth Mode Started...")
-    kirim_tele("🚀 Bot X-MNIT Stealth Aktif! PC Boleh Mati.")
+    kirim_tele("🚀 Bot X-MNIT Stealth Aktif! Cloudflare Tembus!")
     
     while True:
         try:
-            # Ambil perintah dari Firebase
             import requests as req_fire
             res_fire = req_fire.get(f"{FIREBASE_URL}/perintah_bot.json")
             req = res_fire.json()
@@ -80,9 +80,11 @@ def run_xmnit():
                         nomor = tembak_get_number(target)
                         
                         if nomor == "CF_BLOCKED":
-                            kirim_tele("⚠️ Cloudflare mendeteksi Bot! Coba ambil Cookie baru & pastikan saldo ada.")
-                        elif nomor and "ERROR_" not in str(nomor):
-                            # BERHASIL
+                            kirim_tele("⚠️ Cloudflare mendeteksi Bot! Ambil Cookie baru.")
+                        elif nomor == "CHECK_ACTIVE_LIST":
+                            kirim_tele("✅ Perintah Berhasil, Nomor Sedang Dialokasikan. Cek Dashboard!")
+                        elif nomor:
+                            # BERHASIL DAPET NOMOR LANGSUNG
                             req_fire.post(f"{FIREBASE_URL}/active_numbers.json", json={
                                 "number": nomor,
                                 "range": target,
@@ -90,12 +92,9 @@ def run_xmnit():
                             })
                             kirim_tele(f"✅ X-MNIT: Nomor Didapat!\n{nomor}")
                         else:
-                            print(f"❌ Gagal dapet nomor. Respon: {nomor}")
+                            print("❌ Gagal urai nomor dari respon.")
                     
-                    # Hapus perintah biar gak looping
                     req_fire.delete(f"{FIREBASE_URL}/perintah_bot/{req_id}.json")
-            
             time.sleep(2)
         except Exception as e:
-            print(f"Loop Error: {e}")
             time.sleep(5)
