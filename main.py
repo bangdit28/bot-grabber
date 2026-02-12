@@ -2,7 +2,7 @@ import threading, time, os, re, random, requests, json
 from bs4 import BeautifulSoup
 from curl_cffi import requests as curl_req
 
-# === CONFIGURATION ===
+# === CONFIG ===
 FIREBASE_URL = os.getenv("FIREBASE_URL", "").strip().rstrip('/')
 MY_COOKIE = os.getenv("MY_COOKIE", "").strip()
 MNIT_COOKIE = os.getenv("MNIT_COOKIE", "").strip()
@@ -12,6 +12,18 @@ TELE_TOKEN = os.getenv("TELE_TOKEN", "").strip()
 TELE_CHAT_ID = os.getenv("TELE_CHAT_ID", "").strip()
 
 sudah_diproses = set()
+
+def detect_app(text):
+    """Mendeteksi nama aplikasi dari teks atau nama layanan"""
+    apps = ['Facebook', 'WhatsApp', 'Telegram', 'Google', 'TikTok', 'Instagram', 'Shopee', 'Gojek']
+    for app in apps:
+        if app.lower() in text.lower():
+            return app
+    # Cek singkatannya
+    if 'fb' in text.lower(): return 'Facebook'
+    if 'wa' in text.lower(): return 'WhatsApp'
+    if 'tg' in text.lower(): return 'Telegram'
+    return "Global App"
 
 def kirim_tele(pesan):
     if not TELE_TOKEN or not TELE_CHAT_ID: return
@@ -48,11 +60,11 @@ def run_manager():
                 if not item: continue
 
                 nomor_hasil = None
-                situs = "CallTime"
-                tipe_stok = str(item.get('type', '')).upper()
+                nama_service = item.get('serviceName') or item.get('name') or "Unknown"
+                app_name = detect_app(nama_service) # Deteksi nama App dari judul stok
 
-                if "PREFIX" not in tipe_stok:
-                    nums = item.get('stock') or item.get('stok') or item.get('numbers') or []
+                if "PREFIX" not in str(item.get('type')).upper():
+                    nums = item.get('stock') or item.get('stok') or []
                     if nums:
                         if isinstance(nums, list):
                             nomor_hasil = nums.pop(0)
@@ -61,7 +73,6 @@ def run_manager():
                             key = list(nums.keys())[0]; nomor_hasil = nums[key]
                             requests.delete(f"{FIREBASE_URL}/inventory/{inv_id}/stock/{key}.json")
                 else:
-                    situs = "x.mnitnetwork"
                     target_range = item.get('prefixes') or item.get('prefix') or "2367261XXXX"
                     h = {'content-type':'application/json','cookie':MNIT_COOKIE,'mauthtoken':MNIT_TOKEN,'user-agent':MY_UA}
                     res_x = curl_req.post("https://x.mnitnetwork.com/mapi/v1/mdashboard/getnum/number", headers=h, json={"range":target_range}, impersonate="chrome", timeout=20)
@@ -69,55 +80,54 @@ def run_manager():
                         nomor_hasil = res_x.json().get('data', {}).get('copy')
 
                 if nomor_hasil:
-                    # NORMALISASI: Simpan nomor hanya angkanya saja untuk lookup
                     clean_n = re.sub(r'\D', '', str(nomor_hasil))
                     data_final = {
                         "number": str(nomor_hasil),
                         "name": m_name,
-                        "country": item.get('serviceName') or item.get('name'),
-                        "situs": situs,
+                        "country": nama_service,
+                        "cli_app": app_name, # Simpan nama App
                         "timestamp": int(time.time() * 1000)
                     }
                     requests.patch(f"{FIREBASE_URL}/members/{m_id}/active_numbers/{clean_n}.json", json=data_final)
                     requests.patch(f"{FIREBASE_URL}/active_numbers_lookup/{clean_n}.json", json=data_final)
-                    print(f"✅ Nomor {nomor_hasil} dikirim ke {m_name}")
+                    
+                    # Notif Ambil Nomor (CLI Label)
+                    txt_start = (f"📞 <b>BERHASIL AMBIL NOMOR!</b>\n\n"
+                                 f"👤 <b>Nama :</b> {m_name}\n"
+                                 f"📱 <b>Nomor :</b> <code>{nomor_hasil}</code>\n"
+                                 f"🌍 <b>Negara :</b> {nama_service}\n"
+                                 f"📌 <b>CLI atau Apps :</b> {app_name}\n"
+                                 f"💬 <b>Pesan :</b> menunggu sms . . .")
+                    kirim_tele(txt_start)
 
             if len(sudah_diproses) > 100: sudah_diproses.clear()
             time.sleep(1)
         except: time.sleep(5)
 
 # ==========================================
-# 2. GRABBER: SMS (FIX CALLTIME MATCHING)
+# 2. GRABBER: SMS (APP DETECTOR)
 # ==========================================
 def process_incoming_sms(num, msg):
     try:
-        # KUNCI: Bersihkan nomor dari tabel (misal: '257-123' jadi '257123')
         clean_num = re.sub(r'\D', '', str(num))
-        
-        # Cari di lookup siapa pemilik nomor angka ini
         owner = requests.get(f"{FIREBASE_URL}/active_numbers_lookup/{clean_num}.json").json()
-        
         if owner:
+            # Gunakan App dari database atau deteksi ulang dari isi SMS
+            app_name = owner.get('cli_app') or detect_app(msg)
+            
             text_tele = (
                 f"📩 <b>SMS MASUK!</b>\n\n"
                 f"👤 <b>Nama :</b> {owner['name']}\n"
                 f"📱 <b>Nomor :</b> <code>{owner['number']}</code>\n"
                 f"🌍 <b>Negara :</b> {owner['country']}\n"
-                f"📌 <b>Situs :</b> {owner['situs']}\n"
+                f"📌 <b>CLI atau Apps :</b> {app_name}\n"
                 f"💬 <b>Pesan :</b> {msg}"
             )
             kirim_tele(text_tele)
             
-            # Kirim ke Firebase Web
-            requests.post(f"{FIREBASE_URL}/messages.json", json={
-                "liveSms": owner['number'], 
-                "messageContent": msg, 
-                "timestamp": int(time.time() * 1000)
-            })
-            
-            # Hapus lookup biar gak dobel
+            # Update Web
+            requests.post(f"{FIREBASE_URL}/messages.json", json={"liveSms": owner['number'], "messageContent": msg, "timestamp": int(time.time() * 1000)})
             requests.delete(f"{FIREBASE_URL}/active_numbers_lookup/{clean_num}.json")
-            print(f"✅ SMS {clean_num} Berhasil Grab!")
     except: pass
 
 def run_grabber():
@@ -127,25 +137,20 @@ def run_grabber():
     
     while True:
         try:
-            # --- 🛰️ GRAB CALLTIME ---
+            # --- SCAN CALLTIME ---
             res_ct = requests.get(f"https://www.calltimepanel.com/yeni/SMS/?_={int(time.time()*1000)}", headers={'Cookie': MY_COOKIE}, timeout=15)
             if "login" not in res_ct.url:
                 soup = BeautifulSoup(res_ct.text, 'html.parser')
                 for r in soup.select('table tr'):
                     tds = r.find_all('td')
                     if len(tds) < 4: continue
-                    # Ambil teks mentah nomor (misal: 'Burundi - 257xxx')
-                    raw_num = tds[1].text.strip()
-                    msg = tds[2].text.strip()
-                    
-                    uid = f"{raw_num}_{msg[:10]}"
+                    n, m = tds[1].text.strip(), tds[2].text.strip()
+                    uid = f"{n}_{m[:10]}"
                     if uid not in done_ids:
-                        process_incoming_sms(raw_num, msg)
+                        process_incoming_sms(n, m)
                         done_ids.append(uid)
-            else:
-                print("⚠️ Cookie CallTime Expired!")
 
-            # --- 📡 GRAB X-MNIT ---
+            # --- SCAN X-MNIT ---
             tgl = time.strftime("%Y-%m-%d")
             url_mn = f"https://x.mnitnetwork.com/mapi/v1/mdashboard/getnum/info?date={tgl}&page=1&search=&status="
             res_mn = curl_req.get(url_mn, headers=h_mnit, impersonate="chrome", timeout=15)
