@@ -26,22 +26,52 @@ def kirim_tele(pesan):
             
         data = {'chat_id': TELE_CHAT_ID, 'text': clean_msg, 'parse_mode': 'HTML'}
         requests.post(url, data=data, timeout=10)
-    except:
-        pass
+    except Exception as e:
+        print(f"Gagal kirim tele: {e}")
 
 def cari_pemilik_nomor(nomor):
-    """Cari di Firebase siapa anggota yang pegang nomor ini"""
+    """
+    Cari di Firebase siapa anggota yang pegang nomor ini.
+    FIX: Mengambil nama dari app_data/team setelah ID ditemukan.
+    """
     try:
+        # 1. Cari ID Member di node 'members' (tempat nomor aktif disimpan)
         res = requests.get(f"{FIREBASE_URL}/members.json").json()
+        found_id = None
+        
         if res:
             for m_id, data in res.items():
                 active = data.get('active_numbers', {})
+                if not active: continue
+                
+                # Loop setiap nomor aktif milik member ini
                 for k, v in active.items():
-                    # Cocokkan nomor (hapus spasi/karakter aneh)
-                    if str(nomor).strip() in str(v.get('number')).strip():
-                        return v.get('name', m_id)
-        return "Admin"
-    except:
+                    db_num = str(v.get('number', '')).strip()
+                    cari_num = str(nomor).strip()
+                    
+                    # Cek apakah nomor cocok (exact match atau contains)
+                    if cari_num and db_num and (cari_num in db_num or db_num in cari_num):
+                        found_id = m_id
+                        break
+                if found_id: break
+        
+        # 2. Jika ID ketemu, ambil Nama Asli dari 'app_data/team'
+        # Struktur AdminPanel menyimpan nama di: app_data/team/{id}/name
+        if found_id:
+            # Coba ambil nama
+            try:
+                name_res = requests.get(f"{FIREBASE_URL}/app_data/team/{found_id}/name.json").json()
+                if name_res:
+                    return str(name_res) # Mengembalikan nama asli (misal: Intan)
+            except:
+                pass
+            
+            # Jika gagal ambil nama, return ID saja (atau coba cari di objek members jika ada)
+            return found_id
+
+        return "Admin" # Default jika tidak ada yg punya
+    except Exception as e:
+        print(f"Error cari pemilik: {e}")
         return "Admin"
 
 # ==========================================
@@ -87,7 +117,7 @@ def run_manager():
                     # Simpan ke dashboard anggota
                     data_save = {
                         "number": str(nomor_hasil),
-                        "name": item.get('name', 'CallTime'),
+                        "name": item.get('name', 'CallTime'), # Ini nama service, bukan nama user
                         "timestamp": int(time.time() * 1000)
                     }
                     requests.post(f"{FIREBASE_URL}/members/{m_id}/active_numbers.json", json=data_save)
@@ -131,30 +161,32 @@ def run_grabber():
                 
                 uid = f"{num}_{msg[:10]}"
                 if uid not in done_ids:
-                    # Cari siapa yang punya nomor ini
-                    owner = cari_pemilik_nomor(num)
+                    # Cari siapa yang punya nomor ini (Nama Asli)
+                    owner_name = cari_pemilik_nomor(num)
                     
                     # Simpan ke Firebase /messages biar muncul di web
                     requests.post(f"{FIREBASE_URL}/messages.json", json={
                         "liveSms": num,
                         "messageContent": msg,
+                        "ownerName": owner_name, # Simpan nama pemilik juga agar di web langsung muncul
                         "timestamp": int(time.time() * 1000)
                     })
                     
-                    # Notif Telegram SMS Masuk
+                    # Notif Telegram SMS Masuk (Dengan Nama Asli)
                     text_sms = (
                         f"📩 <b>SMS BARU!</b>\n\n"
-                        f"👤 <b>Anggota:</b> {owner}\n"
+                        f"👤 <b>Anggota:</b> {owner_name}\n"
                         f"📱 <b>Nomor:</b> <code>{num}</code>\n"
                         f"💬 <b>Pesan:</b> {msg}"
                     )
                     kirim_tele(text_sms)
                     done_ids.append(uid)
-                    print(f"📩 SMS Masuk: {num}")
+                    print(f"📩 SMS Masuk: {num} untuk {owner_name}")
             
             if len(done_ids) > 200: done_ids = done_ids[-100:]
             time.sleep(4)
-        except:
+        except Exception as e:
+            print(f"Grabber Error: {e}")
             time.sleep(5)
 
 if __name__ == "__main__":
